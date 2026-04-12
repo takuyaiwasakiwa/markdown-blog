@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>スイートランド</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: linear-gradient(135deg, #ff9de2 0%, #ffd6e7 50%, #ffecb3 100%);
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; min-height: 100vh;
+  font-family: 'Arial Rounded MT Bold', Arial, sans-serif;
+  overflow: hidden;
+}
+h1 {
+  font-size: 2.2rem; color: #e91e8c;
+  text-shadow: 2px 2px 0 #fff, 3px 3px 0 #ffb3d9;
+  margin-bottom: 10px; letter-spacing: 3px;
+}
+#ui {
+  display: flex; gap: 40px; margin-bottom: 10px;
+  font-size: 1.1rem; color: #c0006e; font-weight: bold;
+}
+.ui-box {
+  background: rgba(255,255,255,0.7); border-radius: 12px;
+  padding: 6px 18px; border: 2px solid #ffb3d9;
+}
+#canvas {
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(233,30,140,0.25), 0 2px 8px rgba(0,0,0,0.1);
+  cursor: pointer; display: block;
+}
+#msg {
+  margin-top: 10px; font-size: 1rem; color: #c0006e;
+  font-weight: bold; height: 24px; letter-spacing: 1px;
+}
+#btn {
+  margin-top: 10px;
+  background: linear-gradient(180deg, #ff6ecf, #e91e8c);
+  color: #fff; border: none; border-radius: 30px;
+  padding: 10px 36px; font-size: 1.1rem; font-weight: bold;
+  cursor: pointer; letter-spacing: 2px;
+  box-shadow: 0 4px 12px rgba(233,30,140,0.4);
+  transition: transform 0.1s;
+}
+#btn:active { transform: scale(0.96); }
+</style>
+</head>
+<body>
+<h1>🍬 スイートランド 🍭</h1>
+<div id="ui">
+  <div class="ui-box">スコア: <span id="score">0</span></div>
+  <div class="ui-box">残り: <span id="drops">15</span></div>
+  <div class="ui-box">獲得: <span id="collected">0</span>個</div>
+</div>
+<canvas id="canvas" width="560" height="420"></canvas>
+<div id="msg">クリック or スペースでキャンディを落とそう！</div>
+<button id="btn">もう一度</button>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// ─── constants ───
+const PLATFORM_TOP = 260;
+const PLATFORM_H   = 18;
+const PLATFORM_Y   = PLATFORM_TOP + PLATFORM_H;
+const WALL_LEFT    = 40;
+const WALL_RIGHT   = W - 40;
+const FALL_ZONE_Y  = H - 30;
+const CANDY_R      = 13;
+const PUSHER_H     = 70;
+const PUSHER_W     = 20;
+const PUSHER_SPEED = 1.6;
+const TRAY_FRONT   = WALL_RIGHT - 10;
+const TRAY_BACK    = WALL_LEFT + 60;
+
+let score = 0, drops = 15, collected = 0;
+let gameOver = false, dropping = false;
+
+// pusher state
+let pusherX = TRAY_BACK;
+let pusherDir = 1;
+
+// candies on platform
+let candies = [];
+// falling candy
+let fallingCandy = null;
+// collected candies (visual)
+let sparks = [];
+
+const CANDY_COLORS = [
+  '#ff4fa3','#ff7043','#ffcd3c','#4fc3f7','#a5d6a7',
+  '#ce93d8','#80cbc4','#ff8a65','#f48fb1','#81d4fa'
+];
+const CANDY_TYPES = ['circle','star','heart','diamond'];
+
+function randColor() { return CANDY_COLORS[Math.floor(Math.random()*CANDY_COLORS.length)]; }
+function randType()  { return CANDY_TYPES [Math.floor(Math.random()*CANDY_TYPES.length)]; }
+
+function initCandies() {
+  candies = [];
+  // fill platform with candies in a grid
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 14; col++) {
+      let x = WALL_LEFT + 80 + col * 26 + (row%2)*13;
+      let y = PLATFORM_TOP - CANDY_R - row * (CANDY_R*2+2);
+      if (x + CANDY_R < TRAY_FRONT - 5) {
+        candies.push({ x, y, vx:0, vy:0, r: CANDY_R, color: randColor(), type: randType(), settled: true });
+      }
+    }
+  }
+}
+
+function drawCandy(c, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha !== undefined ? alpha : 1;
+  ctx.translate(c.x, c.y);
+  switch(c.type) {
+    case 'circle':
+      ctx.beginPath();
+      ctx.arc(0,0,c.r,0,Math.PI*2);
+      ctx.fillStyle = c.color;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // shine
+      ctx.beginPath();
+      ctx.arc(-c.r*0.3,-c.r*0.3,c.r*0.3,0,Math.PI*2);
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.fill();
+      break;
+    case 'star':
+      drawStar(ctx, 0, 0, 5, c.r, c.r*0.45, c.color);
+      break;
+    case 'heart':
+      drawHeart(ctx, 0, 0, c.r, c.color);
+      break;
+    case 'diamond':
+      drawDiamond(ctx, 0, 0, c.r, c.color);
+      break;
+  }
+  ctx.restore();
+}
+
+function drawStar(ctx, x, y, pts, outer, inner, color) {
+  ctx.beginPath();
+  for (let i=0;i<pts*2;i++) {
+    let r = i%2===0 ? outer : inner;
+    let a = (i*Math.PI/pts) - Math.PI/2;
+    ctx.lineTo(x+Math.cos(a)*r, y+Math.sin(a)*r);
+  }
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.5)';ctx.lineWidth=1.5;ctx.stroke();
+}
+
+function drawHeart(ctx, x, y, r, color) {
+  ctx.beginPath();
+  ctx.moveTo(x, y+r*0.3);
+  ctx.bezierCurveTo(x, y-r*0.5, x-r*1.1, y-r*0.5, x-r*0.9, y+r*0.1);
+  ctx.bezierCurveTo(x-r*0.5, y+r*0.7, x, y+r, x, y+r);
+  ctx.bezierCurveTo(x, y+r, x+r*0.5, y+r*0.7, x+r*0.9, y+r*0.1);
+  ctx.bezierCurveTo(x+r*1.1, y-r*0.5, x, y-r*0.5, x, y+r*0.3);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.5)';ctx.lineWidth=1.5;ctx.stroke();
+}
+
+function drawDiamond(ctx, x, y, r, color) {
+  ctx.beginPath();
+  ctx.moveTo(x, y-r);
+  ctx.lineTo(x+r*0.7, y);
+  ctx.lineTo(x, y+r);
+  ctx.lineTo(x-r*0.7, y);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.5)';ctx.lineWidth=1.5;ctx.stroke();
+}
+
+function drawBackground() {
+  // sky
+  let grad = ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'#fff0fa');
+  grad.addColorStop(1,'#ffe4f0');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,W,H);
+
+  // decorative dots
+  ctx.globalAlpha = 0.12;
+  for (let i=0;i<18;i++) {
+    ctx.beginPath();
+    ctx.arc(30+i*30, 30+Math.sin(i)*18, 8, 0, Math.PI*2);
+    ctx.fillStyle = CANDY_COLORS[i%CANDY_COLORS.length];
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawMachine() {
+  // side walls
+  ctx.fillStyle = '#e91e8c';
+  ctx.fillRect(WALL_LEFT-12, PLATFORM_TOP-160, 14, 160+PLATFORM_H);
+  ctx.fillRect(WALL_RIGHT-2, PLATFORM_TOP-160, 14, 160+PLATFORM_H);
+
+  // back wall (tray back)
+  ctx.fillStyle = '#e91e8c';
+  ctx.fillRect(WALL_LEFT-12, PLATFORM_TOP-160, WALL_RIGHT-WALL_LEFT+26, 12);
+
+  // tray floor (platform)
+  let pfGrad = ctx.createLinearGradient(0,PLATFORM_TOP,0,PLATFORM_Y+4);
+  pfGrad.addColorStop(0,'#fce4ec');
+  pfGrad.addColorStop(1,'#f48fb1');
+  ctx.fillStyle = pfGrad;
+  ctx.fillRect(WALL_LEFT-12, PLATFORM_TOP, WALL_RIGHT-WALL_LEFT+26, PLATFORM_H+4);
+
+  // front lip
+  ctx.fillStyle = '#c2185b';
+  ctx.fillRect(WALL_RIGHT-2, PLATFORM_TOP, 14, PLATFORM_H+4);
+
+  // collection bin
+  ctx.fillStyle = 'rgba(255,182,210,0.5)';
+  ctx.fillRect(WALL_RIGHT+12, PLATFORM_TOP, 60, H-PLATFORM_TOP-20);
+  ctx.strokeStyle='#e91e8c'; ctx.lineWidth=2;
+  ctx.strokeRect(WALL_RIGHT+12, PLATFORM_TOP, 60, H-PLATFORM_TOP-20);
+  ctx.fillStyle='#e91e8c'; ctx.font='bold 12px Arial'; ctx.textAlign='center';
+  ctx.fillText('GET!', WALL_RIGHT+42, PLATFORM_TOP+20);
+
+  // glass panel
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(WALL_LEFT-10, PLATFORM_TOP-155, WALL_RIGHT-WALL_LEFT+22, 155);
+}
+
+function drawPusher() {
+  let x = pusherX;
+  let grad = ctx.createLinearGradient(x,0,x+PUSHER_W,0);
+  grad.addColorStop(0,'#e91e8c');
+  grad.addColorStop(1,'#f48fb1');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(x, PLATFORM_TOP - PUSHER_H, PUSHER_W, PUSHER_H+PLATFORM_H, 4);
+  ctx.fill();
+  ctx.strokeStyle='#c2185b'; ctx.lineWidth=2; ctx.stroke();
+}
+
+function drawDropZone() {
+  // drop indicator arrow
+  if (!gameOver && drops > 0) {
+    let dx = W/2;
+    ctx.save();
+    ctx.globalAlpha = 0.5 + 0.3*Math.sin(Date.now()/300);
+    ctx.fillStyle = '#e91e8c';
+    ctx.beginPath();
+    ctx.moveTo(dx-12, PLATFORM_TOP-175);
+    ctx.lineTo(dx+12, PLATFORM_TOP-175);
+    ctx.lineTo(dx, PLATFORM_TOP-155);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function spawnFallingCandy() {
+  if (drops <= 0 || gameOver || fallingCandy) return;
+  drops--;
+  document.getElementById('drops').textContent = drops;
+  dropping = true;
+  fallingCandy = {
+    x: W/2, y: 30,
+    vx: 0, vy: 2,
+    r: CANDY_R, color: randColor(), type: randType(),
+    settled: false
+  };
+}
+
+function updateFallingCandy() {
+  if (!fallingCandy) return;
+  fallingCandy.vy += 0.35;
+  fallingCandy.y += fallingCandy.vy;
+  fallingCandy.x += fallingCandy.vx;
+
+  // land on platform or top candy
+  let landY = PLATFORM_TOP - fallingCandy.r;
+  // check collision with existing settled candies
+  for (let c of candies) {
+    if (c.settled) {
+      let dx = fallingCandy.x - c.x;
+      let dy = fallingCandy.y - c.y;
+      let dist = Math.sqrt(dx*dx+dy*dy);
+      if (dist < fallingCandy.r + c.r) {
+        let overlap = (fallingCandy.r + c.r) - dist;
+        // push up
+        fallingCandy.y -= overlap * (dy/dist);
+        fallingCandy.vx = dx/dist * 1.5;
+        fallingCandy.vy *= -0.3;
+        if (Math.abs(fallingCandy.vy) < 1) {
+          // settle
+          let sy = fallingCandy.y;
+          fallingCandy.settled = true;
+          candies.push({...fallingCandy});
+          fallingCandy = null;
+          dropping = false;
+          return;
+        }
+      }
+    }
+  }
+
+  if (fallingCandy && fallingCandy.y >= landY) {
+    fallingCandy.y = landY;
+    fallingCandy.settled = true;
+    candies.push({...fallingCandy});
+    fallingCandy = null;
+    dropping = false;
+  }
+}
+
+function updatePusher() {
+  pusherX += PUSHER_SPEED * pusherDir;
+  if (pusherX >= TRAY_FRONT - PUSHER_W) { pusherX = TRAY_FRONT - PUSHER_W; pusherDir = -1; }
+  if (pusherX <= TRAY_BACK)             { pusherX = TRAY_BACK;             pusherDir =  1; }
+}
+
+function updateCandies() {
+  let pusherRight = pusherX + PUSHER_W;
+
+  for (let c of candies) {
+    // pushed by pusher
+    if (c.x - c.r < pusherRight && c.x + c.r > pusherX &&
+        c.y + c.r > PLATFORM_TOP - PUSHER_H && c.y - c.r < PLATFORM_Y) {
+      c.vx = Math.max(c.vx, PUSHER_SPEED * 1.2);
+    }
+
+    c.x += c.vx;
+    c.vx *= 0.85;
+    if (Math.abs(c.vx) < 0.05) c.vx = 0;
+
+    // wall bounce (left)
+    if (c.x - c.r < WALL_LEFT) { c.x = WALL_LEFT + c.r; c.vx = Math.abs(c.vx)*0.5; }
+  }
+
+  // check if any candy fell off the right edge
+  for (let i = candies.length-1; i >= 0; i--) {
+    if (candies[i].x - candies[i].r > TRAY_FRONT) {
+      // collected!
+      collected++;
+      score += 100;
+      document.getElementById('score').textContent = score;
+      document.getElementById('collected').textContent = collected;
+      sparks.push({ x: WALL_RIGHT+42, y: PLATFORM_TOP+40, life: 30, color: candies[i].color });
+      candies.splice(i, 1);
+    }
+  }
+  // remove candies fallen below platform with gravity
+  for (let i = candies.length-1; i >= 0; i--) {
+    if (candies[i].y - candies[i].r > H) candies.splice(i,1);
+  }
+}
+
+function updateSparks() {
+  for (let i = sparks.length-1; i >= 0; i--) {
+    sparks[i].life--;
+    if (sparks[i].life <= 0) sparks.splice(i,1);
+  }
+}
+
+function drawSparks() {
+  for (let s of sparks) {
+    let a = s.life/30;
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.fillStyle = s.color;
+    ctx.font = 'bold 22px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('🍬', s.x, s.y - (30-s.life)*1.5);
+    ctx.fillStyle = '#ff4fa3';
+    ctx.font = 'bold 14px Arial';
+    ctx.fillText('+100', s.x, s.y - (30-s.life)*2.5);
+    ctx.restore();
+  }
+}
+
+function checkGameOver() {
+  if (drops <= 0 && !fallingCandy && !gameOver) {
+    // give a moment then declare over
+    setTimeout(() => {
+      gameOver = true;
+      document.getElementById('msg').textContent =
+        `ゲームオーバー！ 獲得: ${collected}個 スコア: ${score}点`;
+    }, 2000);
+  }
+}
+
+function draw() {
+  ctx.clearRect(0,0,W,H);
+  drawBackground();
+  drawMachine();
+  drawPusher();
+  drawDropZone();
+  for (let c of candies) drawCandy(c);
+  if (fallingCandy) drawCandy(fallingCandy);
+  drawSparks();
+}
+
+function loop() {
+  if (!gameOver) {
+    updatePusher();
+    updateFallingCandy();
+    updateCandies();
+    updateSparks();
+    checkGameOver();
+  } else {
+    updateSparks();
+  }
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function reset() {
+  score = 0; drops = 15; collected = 0; gameOver = false; dropping = false;
+  fallingCandy = null; sparks = [];
+  pusherX = TRAY_BACK; pusherDir = 1;
+  document.getElementById('score').textContent = 0;
+  document.getElementById('drops').textContent = 15;
+  document.getElementById('collected').textContent = 0;
+  document.getElementById('msg').textContent = 'クリック or スペースでキャンディを落とそう！';
+  initCandies();
+}
+
+canvas.addEventListener('click', () => { if (!gameOver) spawnFallingCandy(); });
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); if (!gameOver) spawnFallingCandy(); }
+});
+document.getElementById('btn').addEventListener('click', reset);
+
+initCandies();
+loop();
+</script>
+</body>
+</html>
